@@ -8,7 +8,6 @@ const TOKEN_MAP: Record<string, string> = {
   '\\times': '*',
   '\\cdot': '*',
   '\\div': '/',
-  '=': '=',
   '.': '.',
 }
 
@@ -27,6 +26,12 @@ export function normalizeLatex(latex: string): string | null {
 
   const out: string[] = []
   for (const tok of chars) {
+    if (tok === '=') {
+      // Strip a single trailing '='; if more follow, reject (mid-expression '=' is invalid)
+      if (out.length === 0) return null
+      out.push('=')
+      continue
+    }
     if (REJECT_COMMANDS.has(tok)) return null
     const mapped = TOKEN_MAP[tok]
     if (mapped !== undefined) { out.push(mapped); continue }
@@ -35,7 +40,12 @@ export function normalizeLatex(latex: string): string | null {
     if (/^[a-zA-Z]$/.test(tok)) return null  // variable
     return null
   }
-  return out.join('')
+
+  // Remove trailing '=' (the user's "evaluate this" cue) — reject if '=' appears elsewhere
+  let result = out.join('')
+  if (result.endsWith('=')) result = result.slice(0, -1)
+  if (result.includes('=')) return null
+  return result || null
 }
 
 function tokenizeLatex(s: string): string[] | null {

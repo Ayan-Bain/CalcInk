@@ -18,8 +18,16 @@ describe('latexNormalizer', () => {
     expect(normalizeLatex('5−3')).toBe('5-3')
   })
 
-  it('preserves equals', () => {
-    expect(normalizeLatex('2+2=')).toBe('2+2=')
+  it('strips trailing = (user evaluate cue)', () => {
+    expect(normalizeLatex('2+2=')).toBe('2+2')
+  })
+
+  it('strips trailing = with spaces', () => {
+    expect(normalizeLatex('1 + 2 =')).toBe('1+2')
+  })
+
+  it('rejects mid-expression =', () => {
+    expect(normalizeLatex('1=2+3')).toBeNull()
   })
 
   it('rejects variables', () => {
