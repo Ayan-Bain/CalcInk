@@ -8,13 +8,10 @@ import * as ort from 'onnxruntime-web'
 import type { WorkerRequest, WorkerResponse } from './protocol'
 import { preprocessResized, resizeGray } from './preprocess'
 
-// Point ORT to our locally-served WASM binaries.
-// numThreads=1: disables ORT's internal worker threads (the Web Worker itself
-// provides the off-main-thread isolation we need). This also prevents ORT from
-// dynamically importing the .jsep.mjs worker module (WebGPU init script), which
-// Vite dev-server refuses to serve as a module from /public.
+// Point ORT to our locally-served WASM binaries (only .wasm files; .mjs files
+// are intentionally absent from /public so ORT's JSEP/WebGPU probe gets a 404
+// and falls back gracefully to plain WASM execution).
 ort.env.wasm.wasmPaths = '/ort-wasm/'
-ort.env.wasm.numThreads = 1
 
 // Tokenizer vocab: id → string (loaded from tokenizer.json)
 let idToToken: string[] = []
@@ -37,12 +34,14 @@ const TOP_K_THRES = 0.9      // keep top 10% of logits
 // ---- bootstrap ----
 
 async function init() {
+  console.log('[CalcInk worker] init start')
   const opts: ort.InferenceSession.SessionOptions = {
     executionProviders: ['wasm'],
     graphOptimizationLevel: 'all',
   }
 
   // Load tokenizer
+  console.log('[CalcInk worker] fetching tokenizer…')
   const tokenizerResp = await fetch('/models/tokenizer.json')
   const tokenizerJson = await tokenizerResp.json()
   const vocab: Record<string, number> = tokenizerJson.model.vocab
@@ -204,13 +203,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   if (req.type === 'init') {
     try {
       await init()
-      const resp: WorkerResponse = { type: 'ready' }
-      self.postMessage(resp)
+      self.postMessage({ type: 'ready' } satisfies WorkerResponse)
     } catch (err) {
-      console.error('Worker init failed:', err)
-      // still post ready so app doesn't hang; recognition will fail gracefully
-      const resp: WorkerResponse = { type: 'ready' }
-      self.postMessage(resp)
+      console.error('[CalcInk worker] init failed:', err)
+      self.postMessage({ type: 'loading', message: `Init error: ${err}` } satisfies WorkerResponse)
+      // Post ready so the app doesn't hang; recognize calls will return an error
+      self.postMessage({ type: 'ready' } satisfies WorkerResponse)
     }
     return
   }
