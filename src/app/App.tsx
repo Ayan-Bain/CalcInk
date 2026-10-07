@@ -61,7 +61,14 @@ export default function App() {
     if (strokes.length === 0) { setRecResult(null); return }
     const box = strokesBoundingBox([...strokes])
     if (!box || box.width < 1 || box.height < 1) return
-    const imgData = rasterizeCrop(strokes, box, 512, 128)
+    // Render at natural bounding-box size (+ padding) to preserve aspect ratio.
+    // Forcing a fixed 512×128 distorts the image and confuses the model.
+    const PAD = 20
+    const crop = {
+      x: box.x - PAD, y: box.y - PAD,
+      width: box.width + PAD * 2, height: box.height + PAD * 2,
+    }
+    const imgData = rasterizeCrop(strokes, crop, crop.width, crop.height)
     managerRef.current?.scheduleRecognition(imgData)
   }, [strokes, modelsReady])
 

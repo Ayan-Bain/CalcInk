@@ -8,9 +8,7 @@ import * as ort from 'onnxruntime-web'
 import type { WorkerRequest, WorkerResponse } from './protocol'
 import { preprocessResized, resizeGray } from './preprocess'
 
-// Point ORT to our locally-served WASM binaries (only .wasm files; .mjs files
-// are intentionally absent from /public so ORT's JSEP/WebGPU probe gets a 404
-// and falls back gracefully to plain WASM execution).
+// Point ORT to the locally served WASM binaries and the matching runtime modules.
 ort.env.wasm.wasmPaths = '/ort-wasm/'
 
 // Tokenizer vocab: id → string (loaded from tokenizer.json)
@@ -80,6 +78,8 @@ async function imageResizerLoop(imageData: ImageData): Promise<{ data: Float32Ar
 
   let finalTensor: { data: Float32Array<ArrayBuffer>; w: number; h: number } = { data: new Float32Array(0), w: 0, h: 0 }
 
+  console.log(`[CalcInk worker] resizer input: ${igW}×${igH}`)
+
   for (let iter = 0; iter < 10; iter++) {
     h = Math.round(h * r)
 
@@ -101,12 +101,15 @@ async function imageResizerLoop(imageData: ImageData): Promise<{ data: Float32Ar
     }
     const predictedW = (maxIdx + 1) * 32
 
+    console.log(`[CalcInk worker] resizer iter ${iter}: input ${pw}×${ph} → predicted width ${predictedW}`)
+
     if (predictedW === pw) break  // converged
 
     r = predictedW / pw
     w = predictedW
   }
 
+  console.log(`[CalcInk worker] encoder input: ${finalTensor.w}×${finalTensor.h}`)
   return finalTensor
 }
 
