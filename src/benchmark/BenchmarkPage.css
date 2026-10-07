@@ -1,0 +1,65 @@
+.benchmark {
+  max-width: 940px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  font-family: 'Georgia', serif;
+  color: var(--ink, #1a1a2e);
+}
+
+.benchmark h2 { font-size: 1.4rem; margin-bottom: 4px; }
+.bench-subtitle { color: #666; font-size: 0.85rem; margin-bottom: 16px; }
+
+.bench-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.run-btn {
+  background: var(--accent, #4a6fa5);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.run-btn:disabled { opacity: 0.5; cursor: default; }
+
+.bench-summary { font-size: 0.9rem; color: #444; }
+
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.bench-table th, .bench-table td {
+  padding: 7px 10px;
+  border: 1px solid #d4c5a9;
+  text-align: left;
+}
+.bench-table th { background: #f0ead8; font-weight: 600; }
+.bench-table tr.current { background: #fffbe6; }
+
+.expr-cell { font-family: monospace; font-size: 1rem; }
+.latex-cell { font-family: monospace; max-width: 200px; word-break: break-all; }
+.norm-cell  { font-family: monospace; }
+.match-cell { text-align: center; font-weight: bold; }
+.match-cell:has(> :not(.fail)) { color: #2d6a4f; }
+.latency-cell { text-align: right; font-family: monospace; }
+.fail { color: #c1121f; }
+.expected-cell { font-family: monospace; }
+.value-cell { font-family: monospace; }
+
+.bench-decision {
+  margin-top: 20px;
+  padding: 12px 16px;
+  background: #f0ead8;
+  border-left: 4px solid var(--accent, #4a6fa5);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.9rem;
+}

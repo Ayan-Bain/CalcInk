@@ -19,9 +19,13 @@ let resizerSession: ort.InferenceSession | null = null
 let encoderSession: ort.InferenceSession | null = null
 let decoderSession: ort.InferenceSession | null = null
 
+// Cancellation: set to the current request id; decoder loop checks this
+let activeRequestId = -1
+
 const BOS_TOKEN = 1
 const EOS_TOKEN = 2
-const MAX_SEQ = 512
+// Arithmetic expressions are short. 64 is ample and saves many decoder round-trips.
+const MAX_SEQ = 64
 const TEMPERATURE = 0.00001  // near-deterministic (greedy)
 const TOP_K_THRES = 0.9      // keep top 10% of logits
 
@@ -55,17 +59,14 @@ async function init() {
 
 // ---- inference ----
 
-async function recognize(imageData: ImageData): Promise<string> {
-  // Stage 1: preprocessing + image resizer loop
+async function recognize(imageData: ImageData, requestId: number): Promise<string> {
   const finalTensor = await imageResizerLoop(imageData)
+  if (activeRequestId !== requestId) throw new Error('cancelled')
 
-  // Stage 2: encoder
   const context = await runEncoder(finalTensor)
+  if (activeRequestId !== requestId) throw new Error('cancelled')
 
-  // Stage 3: decoder autoregressive loop
-  const tokens = await runDecoder(context)
-
-  // Stage 4: decode tokens to string
+  const tokens = await runDecoder(context, requestId)
   return decodeTokens(tokens)
 }
 
@@ -123,10 +124,13 @@ async function runEncoder(input: { data: Float32Array; w: number; h: number }): 
   return out['output']
 }
 
-async function runDecoder(context: ort.Tensor): Promise<number[]> {
+async function runDecoder(context: ort.Tensor, requestId: number): Promise<number[]> {
   let tokens = [BOS_TOKEN]
 
   for (let step = 0; step < MAX_SEQ; step++) {
+    // Stale-result cancellation: abort if a newer request superseded this one
+    if (activeRequestId !== requestId) throw new Error('cancelled')
+
     const seqLen = Math.min(tokens.length, MAX_SEQ)
     const x = new BigInt64Array(seqLen)
     const mask = new Uint8Array(seqLen).fill(1)
@@ -212,12 +216,18 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       self.postMessage(resp)
       return
     }
+    activeRequestId = req.id
     try {
-      const latex = await recognize(req.imageData)
-      const resp: WorkerResponse = { type: 'result', id: req.id, latex }
-      self.postMessage(resp)
+      const latex = await recognize(req.imageData, req.id)
+      // Only send if this request wasn't superseded mid-flight
+      if (activeRequestId === req.id) {
+        const resp: WorkerResponse = { type: 'result', id: req.id, latex }
+        self.postMessage(resp)
+      }
     } catch (err: any) {
-      const resp: WorkerResponse = { type: 'error', id: req.id, message: String(err) }
+      const msg = String(err)
+      if (msg.includes('cancelled')) return  // silently drop superseded requests
+      const resp: WorkerResponse = { type: 'error', id: req.id, message: msg }
       self.postMessage(resp)
     }
   }

@@ -1,32 +1,64 @@
-# React + TypeScript + Vite
+# CalcInk
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+**On-device handwritten arithmetic calculator** — Tech Board Inter IIT Bootcamp Phase 1 Software PS
 
-Currently, two official plugins are available:
+Draw any arithmetic expression ending with `=` using mouse, stylus, or touch. CalcInk recognises the handwriting with a fully client-side ONNX model, evaluates the result deterministically, and projects the answer beside the equals sign. No data leaves your device.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Features
 
-## React Compiler
+- Freehand ink capture with pressure-sensitive stroke width
+- Undo / redo / stroke eraser / clear
+- BODMAS/PEMDAS evaluation — multi-digit integers, decimals, negative numbers
+- Division by zero → Undefined
+- Offline after initial model load (PWA, Service Worker + Cache API)
+- Recognition benchmark harness (Stage 6 tab)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Running locally
 
-## Expanding the Oxlint configuration
+```bash
+npm install
+# Download ONNX models (one-time, ~170 MB)
+npm run download-models   # see below
+npm run dev
+```
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+### Model download
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+The ONNX model files are not in the repository. Download them manually or run:
+
+```powershell
+$base = "https://huggingface.co/inYourOwnBrowser/rapid-latex-ocr-onnx/resolve/main"
+foreach ($f in @("image_resizer.onnx","encoder.onnx","decoder.onnx","tokenizer.json")) {
+    Invoke-WebRequest "$base/$f" -OutFile "public/models/$f"
 }
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Files go in `public/models/`.
+
+## Scripts
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Vite dev server with HMR |
+| `npm run build` | Production build + service worker |
+| `npm test` | Vitest unit tests |
+| `npm run test:coverage` | Coverage report |
+
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full pipeline diagram and design decisions.
+
+## Model attribution
+
+- **RapidLatexOCR ONNX** — `inYourOwnBrowser/rapid-latex-ocr-onnx` on Hugging Face  
+  Original: [RapidAI/RapidLaTeXOCR](https://github.com/RapidAI/RapidLaTeXOCR)  
+  Based on: [LaTeX-OCR / pix2tex](https://github.com/lukas-blecher/LaTeX-OCR) by Lukas Blecher  
+  ONNX conversion: [SWHL/ConvertLaTeXOCRToONNX](https://github.com/SWHL/ConvertLaTeXOCRToONNX)  
+  **License: MIT**
+
+- **ONNX Runtime Web** — Microsoft Corporation  
+  **License: MIT**
+
+## Core principle
+
+> The ML model decides what the handwriting most likely represents; deterministic software decides whether that representation is valid CalcInk arithmetic and what the mathematical result is.
