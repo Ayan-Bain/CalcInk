@@ -9,9 +9,7 @@ import type { EvalResult } from '../math/evaluator'
 import './App.css'
 
 const CANVAS_WIDTH = Math.min(window.innerWidth - 32, 900)
-const CANVAS_HEIGHT = Math.round(CANVAS_HEIGHT_RATIO(CANVAS_WIDTH))
-
-function CANVAS_HEIGHT_RATIO(w: number) { return Math.max(300, Math.round(w * 0.45)) }
+const CANVAS_HEIGHT = Math.max(300, Math.round(CANVAS_WIDTH * 0.45))
 
 const STROKE_WIDTHS = [2, 4, 6, 10]
 
@@ -24,17 +22,31 @@ export default function App() {
     useCanvasController(strokeWidth, color, tool)
 
   const [recResult, setRecResult] = useState<RecognitionResult | null>(null)
+  const [modelStatus, setModelStatus] = useState<string>('Loading models…')
+  const [modelsReady, setModelsReady] = useState(false)
   const managerRef = useRef<import('../recognition/RecognitionManager').RecognitionManager | null>(null)
 
-  // lazy-init RecognitionManager once Worker API is available
   useEffect(() => {
     let mounted = true
     import('../recognition/RecognitionManager').then(({ RecognitionManager }) => {
       if (!mounted) return
       const workerUrl = new URL('../recognition/worker.ts', import.meta.url)
-      managerRef.current = new RecognitionManager(workerUrl, result => {
-        if (mounted) setRecResult(result)
-      })
+      managerRef.current = new RecognitionManager(
+        workerUrl,
+        result => { if (mounted) setRecResult(result) },
+        600,
+        msg => { if (mounted) setModelStatus(msg) },
+      )
+      // Listen for ready signal — patch the worker message handler
+      const worker = (managerRef.current as any).worker as Worker
+      const origHandler = worker.onmessage
+      worker.onmessage = (e: MessageEvent) => {
+        if (e.data?.type === 'ready' && mounted) {
+          setModelsReady(true)
+          setModelStatus('Ready')
+        }
+        origHandler?.call(worker, e)
+      }
     })
     return () => {
       mounted = false
@@ -44,12 +56,13 @@ export default function App() {
 
   // schedule recognition whenever strokes change
   useEffect(() => {
+    if (!modelsReady) return
     if (strokes.length === 0) { setRecResult(null); return }
     const box = strokesBoundingBox([...strokes])
     if (!box || box.width < 1 || box.height < 1) return
     const imgData = rasterizeCrop(strokes, box, 512, 128)
     managerRef.current?.scheduleRecognition(imgData)
-  }, [strokes])
+  }, [strokes, modelsReady])
 
   // keyboard shortcuts
   useEffect(() => {
@@ -85,6 +98,8 @@ export default function App() {
         <button onClick={undo} className="tool-btn" title="Undo (Ctrl+Z)">↩</button>
         <button onClick={redo} className="tool-btn" title="Redo (Ctrl+Y)">↪</button>
         <button onClick={clear} className="tool-btn" title="Clear">🗑</button>
+        <div className="divider" />
+        <span className={`model-status ${modelsReady ? 'ready' : 'loading'}`}>{modelStatus}</span>
       </div>
 
       <div className="canvas-wrapper">
@@ -101,7 +116,7 @@ export default function App() {
       <ResultDisplay evalResult={evalResult} normalized={normalized} status={displayStatus} />
 
       <footer className="app-footer">
-        <small>Draw an arithmetic expression ending with = · Recognition powered by RapidLatexOCR (coming in Stage 5)</small>
+        <small>Draw an arithmetic expression ending with =  ·  Recognition: RapidLatexOCR ONNX (MIT)  ·  All inference runs locally</small>
       </footer>
     </div>
   )

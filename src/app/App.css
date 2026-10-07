@@ -91,6 +91,23 @@ body {
   margin: 0 4px;
 }
 
+.model-status {
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+.model-status.loading {
+  color: #888;
+  background: #f0ead8;
+}
+
+.model-status.ready {
+  color: var(--success);
+  background: #d8f0e4;
+}
+
 .canvas-wrapper {
   background: white;
   border: 1px solid var(--border);

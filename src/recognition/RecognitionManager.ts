@@ -7,6 +7,8 @@ export type RecognitionResult =
   | { status: 'rejected'; reason: string }
   | { status: 'empty' }
 
+export type LoadingCallback = (message: string) => void
+
 type ResultCallback = (result: RecognitionResult) => void
 
 export class RecognitionManager {
@@ -14,11 +16,13 @@ export class RecognitionManager {
   private nextId = 1
   private pendingId = 0
   private callback: ResultCallback
+  private onLoading?: LoadingCallback
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private debounceMs: number
 
-  constructor(workerUrl: string | URL, callback: ResultCallback, debounceMs = 600) {
+  constructor(workerUrl: string | URL, callback: ResultCallback, debounceMs = 600, onLoading?: LoadingCallback) {
     this.callback = callback
+    this.onLoading = onLoading
     this.debounceMs = debounceMs
     this.worker = new Worker(workerUrl, { type: 'module' })
     this.worker.onmessage = this.handleMessage.bind(this)
@@ -42,6 +46,7 @@ export class RecognitionManager {
   private handleMessage(e: MessageEvent<WorkerResponse>): void {
     const msg = e.data
     if (msg.type === 'ready') return
+    if (msg.type === 'loading') { this.onLoading?.(msg.message); return }
 
     if (msg.type === 'result') {
       if (msg.id !== this.pendingId) return  // stale result
