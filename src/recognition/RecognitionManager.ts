@@ -52,20 +52,24 @@ export class RecognitionManager {
       if (msg.id !== this.pendingId) return  // stale result
 
       if (!msg.latex) {
+        console.log('[CalcInk] recognition: empty output')
         this.callback({ status: 'empty' })
         return
       }
       const normalized = normalizeLatex(msg.latex)
+      console.log(`[CalcInk] raw latex: "${msg.latex}"  →  normalized: ${normalized === null ? 'null (rejected)' : `"${normalized}"`}`)
       if (!normalized) {
         this.callback({ status: 'rejected', reason: 'unsupported LaTeX' })
         return
       }
       const evalResult = evaluate(normalized)
+      console.log(`[CalcInk] eval: "${normalized}" =`, evalResult.ok ? evalResult.value : `ERROR(${evalResult.error})`)
       this.callback({ status: 'recognized', normalized, eval: evalResult })
     }
 
     if (msg.type === 'error') {
       if (msg.id !== this.pendingId) return
+      console.warn('[CalcInk] worker error:', msg.message)
       this.callback({ status: 'rejected', reason: msg.message })
     }
   }
