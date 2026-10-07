@@ -33,9 +33,7 @@ export default function App() {
     let mounted = true
     import('../recognition/RecognitionManager').then(({ RecognitionManager }) => {
       if (!mounted) return
-      const workerUrl = new URL('../recognition/worker.ts', import.meta.url)
       managerRef.current = new RecognitionManager(
-        workerUrl,
         result => { if (mounted) setRecResult(result) },
         600,
         msg => { if (mounted) setModelStatus(msg) },

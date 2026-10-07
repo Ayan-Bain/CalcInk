@@ -24,7 +24,6 @@ export class RecognitionManager {
   private debounceMs: number
 
   constructor(
-    workerUrl: string | URL,
     callback: ResultCallback,
     debounceMs = 600,
     onLoading?: LoadingCallback,
@@ -34,7 +33,12 @@ export class RecognitionManager {
     this.onLoading = onLoading
     this.onReady = onReady
     this.debounceMs = debounceMs
-    this.worker = new Worker(workerUrl, { type: 'module' })
+    // new URL + new Worker must be a single expression so Vite bundles the
+    // worker and outputs a .js asset (not a raw .ts file with wrong MIME type)
+    this.worker = new Worker(
+      new URL('./worker.ts', import.meta.url),
+      { type: 'module' },
+    )
     this.worker.onmessage = this.handleMessage.bind(this)
     this.worker.postMessage({ type: 'init' })
   }
