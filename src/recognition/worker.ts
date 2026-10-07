@@ -4,6 +4,12 @@ import type { WorkerRequest, WorkerResponse } from './protocol'
 const MODEL_ID = 'onnx-community/latex_finetuned-ONNX'
 const MODEL_REVISION = 'cdc13b093c439bb894fd11d8bbd8d237ed16a257'
 
+// Disable ORT WASM multi-threading. The threaded WASM backend requires
+// SharedArrayBuffer, which needs COOP/COEP headers. Without them the
+// inference call blocks forever waiting on a SharedArrayBuffer atomic.
+// Single-threaded WASM is slower but works in any browser context.
+env.backends.onnx.wasm.numThreads = 1
+
 // Some HuggingFace repos name the merged decoder differently; redirect to the split file.
 const _origFetch = env.fetch
 env.fetch = (input, init) => {
@@ -28,6 +34,7 @@ function loadRecognizer() {
     dtype: 'q4',
     revision: MODEL_REVISION,
     progress_callback: progress => {
+      console.log('[CalcInk worker] progress:', progress.status, progress.file ?? '', progress.progress ?? '')
       // transformers.js emits status:'progress' (not 'progress_total') for ongoing downloads
       if (progress.status !== 'progress') return
       const percent = Math.round(progress.progress ?? 0)
@@ -47,15 +54,20 @@ let recognizer: Recognizer | null = null
 let activeRequestId = -1
 
 async function init(): Promise<void> {
+  console.log('[CalcInk worker] init — model:', MODEL_ID, 'revision:', MODEL_REVISION)
   self.postMessage({
     type: 'loading',
     message: 'Loading handwriting model (first load downloads about 402 MiB)…',
   } satisfies WorkerResponse)
   recognizer = await loadRecognizer()
+  console.log('[CalcInk worker] model ready')
 }
 
 async function recognize(imageData: ImageData, requestId: number): Promise<string> {
   if (!recognizer) throw new Error('Handwriting model is not loaded')
+
+  console.log(`[CalcInk worker] recognize id=${requestId} image=${imageData.width}×${imageData.height}`)
+  const t0 = performance.now()
 
   const image = new RawImage(imageData.data, imageData.width, imageData.height, 4)
   const output = await recognizer(image, {
@@ -65,7 +77,9 @@ async function recognize(imageData: ImageData, requestId: number): Promise<strin
   })
 
   if (activeRequestId !== requestId) throw new Error('cancelled')
-  return output[0]?.generated_text.trim() ?? ''
+  const latex = output[0]?.generated_text.trim() ?? ''
+  console.log(`[CalcInk worker] result id=${requestId} (${(performance.now()-t0).toFixed(0)}ms): "${latex}"`)
+  return latex
 }
 
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {

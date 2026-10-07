@@ -1,8 +1,15 @@
-import { createReadStream } from 'node:fs'
+import { createReadStream, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
+
+const ortWasmModuleFiles = [
+  'ort-wasm-simd-threaded.mjs',
+  'ort-wasm-simd-threaded.jsep.mjs',
+  'ort-wasm-simd-threaded.jspi.mjs',
+  'ort-wasm-simd-threaded.asyncify.mjs',
+]
 
 // In dev, Vite intercepts all dynamic import() calls via its plugin pipeline
 // and refuses to serve files from /public as ES modules.  This middleware runs
@@ -28,9 +35,34 @@ const ortWasmDevMiddleware = {
   },
 }
 
+const ortWasmBuildAssets: Plugin = {
+  name: 'ort-wasm-build-assets',
+  apply: 'build',
+  generateBundle() {
+    for (const fileName of ortWasmModuleFiles) {
+      this.emitFile({
+        type: 'asset',
+        fileName: `ort-wasm/${fileName}`,
+        source: readFileSync(resolve(__dirname, 'node_modules/onnxruntime-web/dist', fileName)),
+      })
+    }
+  },
+}
+
 export default defineConfig({
+  server: {
+    headers: {
+      // Required for SharedArrayBuffer (ORT WASM multi-threading).
+      // With numThreads=1 in the worker this isn't strictly needed today,
+      // but setting it here means we can re-enable threading later without
+      // server config changes, and it's correct for production too.
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
   plugins: [
     ortWasmDevMiddleware,
+    ortWasmBuildAssets,
     react(),
     VitePWA({
       registerType: 'autoUpdate',
