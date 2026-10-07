@@ -53,10 +53,14 @@ const ortWasmBuildAssets: Plugin = {
 export default defineConfig({
   server: {
     headers: {
-      // Required for SharedArrayBuffer (ORT WASM multi-threading).
-      // With numThreads=1 in the worker this isn't strictly needed today,
-      // but setting it here means we can re-enable threading later without
-      // server config changes, and it's correct for production too.
+      // Required for SharedArrayBuffer — ORT's threaded WASM binary needs it
+      // even with numThreads=1 because the .wasm module itself uses SAB internally.
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  preview: {
+    headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
