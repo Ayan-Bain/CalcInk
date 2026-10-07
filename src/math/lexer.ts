@@ -5,6 +5,8 @@ export type TokenKind =
   | 'mul'
   | 'div'
   | 'equals'
+  | 'lparen'
+  | 'rparen'
   | 'eof'
 
 export interface Token {
@@ -27,6 +29,8 @@ export function tokenize(input: string): Token[] {
     if (ch === '*' || ch === '×' || ch === '·') { tokens.push({ kind: 'mul' }); i++; continue }
     if (ch === '/' || ch === '÷') { tokens.push({ kind: 'div' }); i++; continue }
     if (ch === '=') { tokens.push({ kind: 'equals' }); i++; continue }
+    if (ch === '(') { tokens.push({ kind: 'lparen' }); i++; continue }
+    if (ch === ')') { tokens.push({ kind: 'rparen' }); i++; continue }
 
     if (ch >= '0' && ch <= '9' || ch === '.') {
       let num = ''

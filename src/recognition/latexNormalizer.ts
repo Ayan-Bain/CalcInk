@@ -5,8 +5,10 @@ const TOKEN_MAP: Record<string, string> = {
   '+': '+',
   '-': '-',
   '−': '-',
-  '×': '*',  // Unicode multiplication sign (TrOCR output)
-  '÷': '/',  // Unicode division sign (TrOCR output)
+  '×': '*',
+  '÷': '/',
+  '(': '(',
+  ')': ')',
   '\\times': '*',
   '\\cdot': '*',
   '\\div': '/',
@@ -18,7 +20,7 @@ const REJECT_COMMANDS = new Set([
   '\\frac', '\\sqrt', '\\int', '\\sum', '\\prod', '\\lim',
   '\\sin', '\\cos', '\\tan', '\\log', '\\ln', '\\exp',
   '\\alpha', '\\beta', '\\gamma', '\\pi', '\\infty',
-  '^', '_', '{', '}', '(', ')',
+  '^', '_', '{', '}',
 ])
 
 export function normalizeLatex(latex: string): string | null {

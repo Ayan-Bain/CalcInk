@@ -47,12 +47,18 @@ class Parser {
     return left
   }
 
-  // factor := ('-' factor) | number
+  // factor := ('-' factor) | '(' expression ')' | number
   private parseFactor(): ASTNode {
     if (this.peek().kind === 'minus') {
       this.consume()
       const operand = this.parseFactor()
       return { kind: 'unary', op: '-', operand }
+    }
+    if (this.peek().kind === 'lparen') {
+      this.consume()
+      const node = this.parseExpression()
+      this.expect('rparen')
+      return node
     }
     return this.parseNumber()
   }
