@@ -2,8 +2,6 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { InkCanvas } from '../canvas/InkCanvas'
 import { useCanvasController, type Tool } from '../canvas/useCanvasController'
 import { ResultDisplay } from '../projection/ResultDisplay'
-import { strokesBoundingBox } from '../ink/types'
-import { rasterizeCrop } from '../canvas/renderer'
 import type { RecognitionResult } from '../recognition/RecognitionManager'
 import type { EvalResult } from '../math/evaluator'
 import './App.css'
@@ -41,16 +39,8 @@ export default function App() {
         result => { if (mounted) setRecResult(result) },
         600,
         msg => { if (mounted) setModelStatus(msg) },
+        () => { if (mounted) { setModelsReady(true); setModelStatus('Ready') } },
       )
-      const worker = (managerRef.current as any).worker as Worker
-      const origHandler = worker.onmessage?.bind(worker)
-      worker.onmessage = (e: MessageEvent) => {
-        if (e.data?.type === 'ready' && mounted) {
-          setModelsReady(true)
-          setModelStatus('Ready')
-        }
-        origHandler?.(e)
-      }
     })
     return () => { mounted = false; managerRef.current?.destroy() }
   }, [])
@@ -59,17 +49,7 @@ export default function App() {
   useEffect(() => {
     if (!modelsReady) return
     if (strokes.length === 0) { setRecResult(null); return }
-    const box = strokesBoundingBox([...strokes])
-    if (!box || box.width < 1 || box.height < 1) return
-    // Render at natural bounding-box size (+ padding) to preserve aspect ratio.
-    // Forcing a fixed 512×128 distorts the image and confuses the model.
-    const PAD = 20
-    const crop = {
-      x: box.x - PAD, y: box.y - PAD,
-      width: box.width + PAD * 2, height: box.height + PAD * 2,
-    }
-    const imgData = rasterizeCrop(strokes, crop, crop.width, crop.height)
-    managerRef.current?.scheduleRecognition(imgData)
+    managerRef.current?.scheduleRecognition(strokes)
   }, [strokes, modelsReady])
 
   useEffect(() => {
@@ -137,7 +117,7 @@ export default function App() {
       )}
 
       <footer className="app-footer">
-        <small>Recognition: RapidLatexOCR ONNX (MIT) · All inference runs locally · No data leaves your device</small>
+        <small>Recognition: CoMER handwritten-math ONNX · Inference runs locally · No data leaves your device</small>
       </footer>
     </div>
   )

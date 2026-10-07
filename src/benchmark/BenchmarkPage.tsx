@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { BENCHMARK_CASES, type BenchmarkCase } from './expressions'
-import { renderExpressionToImageData } from './renderExpression'
+import { renderExpressionToStrokes } from './renderExpression'
+import type { StrokeData } from '../recognition/protocol'
 import { normalizeLatex } from '../recognition/latexNormalizer'
 import { evaluate } from '../math/evaluator'
 import './BenchmarkPage.css'
@@ -17,8 +18,10 @@ interface RunResult {
 }
 
 interface WorkerBridge {
-  recognize: (img: ImageData) => Promise<{ latex: string; latencyMs: number }>
+  recognize: (strokes: StrokeData[]) => Promise<{ latex: string; latencyMs: number }>
   ready: boolean
+  error: string | null
+  status: string
 }
 
 function makeWorkerBridge(): WorkerBridge {
@@ -26,10 +29,14 @@ function makeWorkerBridge(): WorkerBridge {
   let seq = 0
   const pending = new Map<number, { resolve: (v: { latex: string; latencyMs: number }) => void; reject: (e: Error) => void; t0: number }>()
   let _ready = false
+  let _error: string | null = null
+  let _status = 'Loading handwriting model…'
 
   w.onmessage = (e) => {
     const msg = e.data
     if (msg.type === 'ready') { _ready = true; return }
+    if (msg.type === 'loading') { _status = msg.message; return }
+    if (msg.type === 'init-error') { _error = msg.message; return }
     if (msg.type === 'result') {
       const p = pending.get(msg.id)
       if (p) { p.resolve({ latex: msg.latex, latencyMs: performance.now() - p.t0 }); pending.delete(msg.id) }
@@ -44,11 +51,13 @@ function makeWorkerBridge(): WorkerBridge {
 
   return {
     get ready() { return _ready },
-    recognize(img: ImageData) {
+    get error() { return _error },
+    get status() { return _status },
+    recognize(strokes: StrokeData[]) {
       const id = ++seq
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject, t0: performance.now() })
-        w.postMessage({ type: 'recognize', id, imageData: img })
+        w.postMessage({ type: 'recognize', id, strokes })
       })
     },
   }
@@ -57,6 +66,8 @@ function makeWorkerBridge(): WorkerBridge {
 export default function BenchmarkPage() {
   const bridgeRef = useRef<WorkerBridge | null>(null)
   const [workerReady, setWorkerReady] = useState(false)
+  const [workerError, setWorkerError] = useState<string | null>(null)
+  const [workerStatus, setWorkerStatus] = useState('Loading handwriting model…')
   const [results, setResults] = useState<RunResult[]>([])
   const [running, setRunning] = useState(false)
   const [currentCase, setCurrentCase] = useState<string | null>(null)
@@ -65,7 +76,9 @@ export default function BenchmarkPage() {
     const bridge = makeWorkerBridge()
     bridgeRef.current = bridge
     const interval = setInterval(() => {
+      setWorkerStatus(bridge.status)
       if (bridge.ready) { setWorkerReady(true); clearInterval(interval) }
+      if (bridge.error) { setWorkerError(bridge.error); clearInterval(interval) }
     }, 500)
     return () => clearInterval(interval)
   }, [])
@@ -88,9 +101,9 @@ export default function BenchmarkPage() {
   }
 
   async function runCase(bc: BenchmarkCase): Promise<RunResult> {
-    const img = renderExpressionToImageData(bc.display)
+    const strokes = renderExpressionToStrokes(bc.display)
     try {
-      const { latex, latencyMs } = await bridgeRef.current!.recognize(img)
+      const { latex, latencyMs } = await bridgeRef.current!.recognize(strokes)
       const normalized = normalizeLatex(latex)
       let evalValue: number | 'undefined' | null = null
       let evalMatch = false
@@ -141,13 +154,14 @@ export default function BenchmarkPage() {
     <div className="benchmark">
       <h2>Stage 6 — Recognition Benchmark</h2>
       <p className="bench-subtitle">
-        Model: RapidLatexOCR ONNX · Input: typeset expressions rendered to canvas
+        Model: CoMER INT8 · Input: typeset sanity cases (handwriting accuracy not yet measured)
       </p>
 
       <div className="bench-controls">
         <button onClick={runAll} disabled={!workerReady || running} className="run-btn">
-          {!workerReady ? 'Loading models…' : running ? `Running (${currentCase})…` : 'Run All Benchmarks'}
+          {workerError ? 'Model failed to load' : !workerReady ? workerStatus : running ? `Running (${currentCase})…` : 'Run All Benchmarks'}
         </button>
+        {workerError && <p className="fail">Model load failed: {workerError}</p>}
         {results.length > 0 && (
           <div className="bench-summary">
             Correct: <strong>{correct}/{results.length}</strong> ·
@@ -200,8 +214,8 @@ export default function BenchmarkPage() {
         <div className="bench-decision">
           <strong>Decision:</strong>{' '}
           {correct >= 7
-            ? 'RapidLatexOCR PASSES benchmark gate — proceeding as primary model.'
-            : 'RapidLatexOCR fails gate — evaluate TrOCR-LaTeX ONNX as fallback.'}
+            ? 'TrOCR-LaTeX passes the typeset sanity gate; validate against handwritten samples before claiming handwriting accuracy.'
+            : 'TrOCR-LaTeX did not pass the typeset sanity gate; inspect the outputs and validate with labeled handwriting samples.'}
         </div>
       )}
     </div>

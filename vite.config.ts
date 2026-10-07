@@ -4,26 +4,27 @@ import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
-const ortWasmModuleFiles = [
+const ortWasmFiles = [
   'ort-wasm-simd-threaded.mjs',
+  'ort-wasm-simd-threaded.wasm',
   'ort-wasm-simd-threaded.jsep.mjs',
-  'ort-wasm-simd-threaded.jspi.mjs',
-  'ort-wasm-simd-threaded.asyncify.mjs',
+  'ort-wasm-simd-threaded.jsep.wasm',
 ]
 
 // In dev, Vite intercepts all dynamic import() calls via its plugin pipeline
 // and refuses to serve files from /public as ES modules.  This middleware runs
-// BEFORE Vite's transform pipeline and serves the ORT .mjs glue scripts directly
-// from node_modules, so Vite never gets a chance to block them.
+// BEFORE Vite's transform pipeline and serves the ORT .mjs glue scripts and
+// .wasm binaries directly from node_modules, so Vite never gets a chance to block them.
 const ortWasmDevMiddleware = {
   name: 'ort-wasm-dev',
   configureServer(server: any) {
     server.middlewares.use((req: any, res: any, next: any) => {
       const url: string = (req.url ?? '').split('?')[0]
-      if (url.startsWith('/ort-wasm/') && url.endsWith('.mjs')) {
+      if (url.startsWith('/ort-wasm/') && (url.endsWith('.mjs') || url.endsWith('.wasm'))) {
         const fileName = url.slice('/ort-wasm/'.length)
         const filePath = resolve(__dirname, 'node_modules/onnxruntime-web/dist', fileName)
-        res.setHeader('Content-Type', 'text/javascript')
+        const contentType = url.endsWith('.wasm') ? 'application/wasm' : 'text/javascript'
+        res.setHeader('Content-Type', contentType)
         res.setHeader('Cache-Control', 'no-cache')
         createReadStream(filePath)
           .on('error', () => next())
@@ -39,7 +40,7 @@ const ortWasmBuildAssets: Plugin = {
   name: 'ort-wasm-build-assets',
   apply: 'build',
   generateBundle() {
-    for (const fileName of ortWasmModuleFiles) {
+    for (const fileName of ortWasmFiles) {
       this.emitFile({
         type: 'asset',
         fileName: `ort-wasm/${fileName}`,
@@ -69,21 +70,16 @@ export default defineConfig({
       workbox: {
         // Cache static assets + ort-wasm
         globPatterns: ['**/*.{js,css,html,ico,svg,wasm,mjs}'],
-        // Model files are large — use CacheFirst, max 1 entry each
+        // CoMER model files — use CacheFirst (models don't change)
         runtimeCaching: [
           {
-            urlPattern: /\/models\/.*\.onnx$/,
+            urlPattern: /\/models\/comer\//,
             handler: 'CacheFirst',
             options: {
               cacheName: 'calcink-models',
-              expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 30 },
               cacheableResponse: { statuses: [0, 200] },
             },
-          },
-          {
-            urlPattern: /\/models\/tokenizer\.json$/,
-            handler: 'CacheFirst',
-            options: { cacheName: 'calcink-models' },
           },
           {
             urlPattern: /\/ort-wasm\//,

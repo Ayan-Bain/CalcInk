@@ -2,13 +2,13 @@
 
 **On-Device Handwritten Math Calculator | Tech Board Inter IIT Bootcamp — Phase 1 Software PS**  
 **Date:** 7 October 2026  
-**Status:** Updated design baseline. RapidLatexOCR ONNX is the primary candidate, subject to the benchmark gate.
+**Status:** TrOCR-LaTeX ONNX is selected as the handwritten-math model. RapidLatexOCR failed the browser benchmark (0/8 typewritten cases).
 
 ## 1. Executive Summary
 
 CalcInk is a 100% client-side handwritten arithmetic calculator. A user writes an expression with mouse, stylus, or touch; CalcInk captures digital ink, recognizes the expression, evaluates it using a deterministic parser, and projects the result beside the terminal equals sign.
 
-After the Hugging Face model survey, the primary candidate is **RapidLatexOCR ONNX**. It is browser-oriented, ONNX-based, recognizes handwritten/typeset math formulas, and emits LaTeX. The major engineering risks are its approximately **179 MB** package size and the need to normalize general LaTeX output into CalcInk's strict arithmetic vocabulary.
+CalcInk uses **TrOCR-LaTeX ONNX**, a MathWriting-finetuned handwriting model, through Transformers.js. Its q4 browser weights total about **402 MiB** and are cached after first download. Recognition emits LaTeX, which is normalized into CalcInk's strict arithmetic vocabulary.
 
 ## 2. Product Requirements
 
@@ -39,8 +39,8 @@ After the Hugging Face model survey, the primary candidate is **RapidLatexOCR ON
 | Frontend | React+TS / Vue / Svelte / Vanilla TS | **React + TypeScript** |
 | Rendering | Canvas 2D / SVG / WebGL-WebGPU | **Canvas 2D** |
 | Recognition | Segmentation / image-to-LaTeX / math OCR | **Image-to-LaTeX** |
-| Primary model | RapidLatexOCR / TrOCR-LaTeX / other HMER | **RapidLatexOCR ONNX**, benchmark-gated |
-| Runtime | ONNX Runtime Web / Transformers.js / TF.js | **ONNX Runtime Web** |
+| Primary model | RapidLatexOCR / TrOCR-LaTeX / other HMER | **TrOCR-LaTeX ONNX q4**, selected for handwritten math |
+| Runtime | ONNX Runtime Web / Transformers.js / TF.js | **Transformers.js** |
 | Execution | WebGPU / WASM | **WebGPU + WASM fallback** |
 | Inference location | Main thread / Worker | **Web Worker** |
 | Evaluator | eval / shunting-yard / recursive descent | **Recursive descent** |
@@ -147,26 +147,13 @@ The visible `=` is a delimiter and is not evaluated.
 
 ## 7. Model Recommendation
 
-### Primary: RapidLatexOCR ONNX
+### Evaluated: RapidLatexOCR ONNX
 
-Hugging Face describes `inYourOwnBrowser/rapid-latex-ocr-onnx` as a re-hosted, unmodified ONNX copy of RapidAI/RapidLatexOCR for handwritten/typeset math formulas, usable fully client-side with `onnxruntime-web`. It contains `image_resizer.onnx`, `encoder.onnx`, `decoder.onnx`, and `tokenizer.json`, with about **179 MB** of files and an **MIT** license.
+RapidLatexOCR scored **0/8** on the existing browser benchmark, failing to reliably recognize even its typewritten test inputs, so it was replaced.
 
-**Pros**
-- Browser-oriented ONNX package.
-- Math-specific.
-- Handwritten/typeset formula recognition.
-- Direct fit for ONNX Runtime Web.
-- MIT license.
+### Selected: TrOCR-LaTeX ONNX
 
-**Cons**
-- ~179 MB is substantial for a web app.
-- Output is general LaTeX rather than CalcInk's tiny arithmetic grammar.
-- Must benchmark warm/cold latency and memory.
-- Long-expression behavior must be measured.
-
-### Secondary: TrOCR-LaTeX ONNX
-
-`onnx-community/latex_finetuned-ONNX` is an ONNX version of `tjoab/latex_finetuned`, a TrOCR model fine-tuned on Google's MathWriting dataset. Its model card reports **14.9% CER** and warns that very long expressions degrade.
+`onnx-community/latex_finetuned-ONNX` is an ONNX version of `tjoab/latex_finetuned`, fine-tuned on Google's MathWriting dataset. Its model card reports **14.9% CER** on its evaluation set; this is not a CalcInk accuracy guarantee. The selected q4 encoder and decoder total about **402 MiB**. Very long expressions may degrade.
 
 Use it as the primary fallback benchmark, not as an assumed winner.
 
@@ -199,7 +186,7 @@ Measure:
 - integration difficulty
 - license/attribution requirements
 
-**Decision rule:** RapidLatexOCR remains primary only if it passes the browser feasibility gate. Otherwise benchmark/select TrOCR-LaTeX ONNX.
+**Decision:** RapidLatexOCR failed the existing browser gate. TrOCR-LaTeX is now primary; add handwritten benchmark samples before claiming a CalcInk accuracy level.
 
 ## 9. Performance Architecture
 
@@ -230,11 +217,11 @@ Lexer, recursive-descent parser, AST, evaluator, precedence, decimals, negatives
 ### Stage 4 — Recognition abstraction
 Worker protocol, scheduler, request IDs, stale-result handling.
 
-### Stage 5 — RapidLatexOCR integration
-ONNX assets, preprocessing, crop generation, decoding, LaTeX normalization.
+### Stage 5 — Handwritten OCR integration
+MathWriting-finetuned TrOCR through Transformers.js in a worker; normalize and evaluate its LaTeX output.
 
 ### Stage 6 — Benchmark gate
-Compare RapidLatexOCR and TrOCR-LaTeX ONNX; document measured decision.
+Compare handwriting-specific recognition against labeled handwritten samples; document accuracy and latency.
 
 ### Stage 7 — Reactive recognition
 Connect edits to recognition and result projection.
@@ -299,7 +286,7 @@ PRD.md
 
 | Risk | Mitigation |
 |---|---|
-| 179 MB model too large | Benchmark memory/download; compare fallback |
+| ~402 MiB model too large | Measure browser storage and memory; evaluate smaller variants |
 | General LaTeX output | Strict normalizer + grammar |
 | Long expression accuracy | Benchmark representative expressions |
 | UI lag | Worker + debounce + persistent session |

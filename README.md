@@ -17,23 +17,12 @@ Draw any arithmetic expression ending with `=` using mouse, stylus, or touch. Ca
 
 ```bash
 npm install
-# Download ONNX models (one-time, ~170 MB)
-npm run download-models   # see below
 npm run dev
 ```
 
-### Model download
-
-The ONNX model files are not in the repository. Download them manually or run:
-
-```powershell
-$base = "https://huggingface.co/inYourOwnBrowser/rapid-latex-ocr-onnx/resolve/main"
-foreach ($f in @("image_resizer.onnx","encoder.onnx","decoder.onnx","tokenizer.json")) {
-    Invoke-WebRequest "$base/$f" -OutFile "public/models/$f"
-}
-```
-
-Files go in `public/models/`.
+The first model load downloads about **402 MiB** from Hugging Face. Transformers.js caches
+the model in the browser; subsequent loads can use the cached files, including offline.
+Images are processed locally and are never uploaded.
 
 ## Scripts
 
@@ -50,13 +39,16 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full pipeline diagram and design 
 
 ## Model attribution
 
-- **RapidLatexOCR ONNX** — `inYourOwnBrowser/rapid-latex-ocr-onnx` on Hugging Face  
-  Original: [RapidAI/RapidLaTeXOCR](https://github.com/RapidAI/RapidLaTeXOCR)  
-  Based on: [LaTeX-OCR / pix2tex](https://github.com/lukas-blecher/LaTeX-OCR) by Lukas Blecher  
-  ONNX conversion: [SWHL/ConvertLaTeXOCRToONNX](https://github.com/SWHL/ConvertLaTeXOCRToONNX)  
+- **TrOCR-LaTeX ONNX** — [`onnx-community/latex_finetuned-ONNX`](https://huggingface.co/onnx-community/latex_finetuned-ONNX)  
+  Fine-tuned by `tjoab` on Google's MathWriting handwritten-math dataset; loaded with the
+  `q4` quantized weights via Transformers.js. The model card reports 14.9% character error
+  rate on its evaluation set; this is not a CalcInk accuracy guarantee.
   **License: MIT**
 
-- **ONNX Runtime Web** — Microsoft Corporation  
+- **Transformers.js** — Hugging Face  
+  **License: Apache-2.0**
+
+- **ONNX Runtime Web** — Microsoft Corporation
   **License: MIT**
 
 ## Core principle

@@ -1,84 +1,157 @@
-import { env, pipeline, RawImage } from '@huggingface/transformers'
+// CoMER handwritten-math recognition worker.
+// Uses two ONNX sessions (encoder + decoder) running directly in ORT WASM.
+// Model: 7.2 MB INT8 — purpose-built for CROHME handwritten LaTeX.
+// Adapted from kimseungdae/ink-on (MIT)
+import * as ort from 'onnxruntime-web'
 import type { WorkerRequest, WorkerResponse } from './protocol'
+import { preprocessStrokes } from './preprocess'
+import { fetchWithCache } from './modelCache'
+import { repairLatex } from './latexRepair'
 
-const MODEL_ID = 'onnx-community/latex_finetuned-ONNX'
-const MODEL_REVISION = 'cdc13b093c439bb894fd11d8bbd8d237ed16a257'
+// Serve ORT WASM files from /ort-wasm/ (dev middleware + build asset plugin)
+ort.env.wasm.wasmPaths = '/ort-wasm/'
+// Single-threaded: threaded WASM is used but with 1 thread (no SharedArrayBuffer needed)
+ort.env.wasm.numThreads = 1
+ort.env.wasm.simd = true
 
-// Disable ORT WASM multi-threading. The threaded WASM backend requires
-// SharedArrayBuffer, which needs COOP/COEP headers. Without them the
-// inference call blocks forever waiting on a SharedArrayBuffer atomic.
-// Single-threaded WASM is slower but works in any browser context.
-env.backends.onnx.wasm.numThreads = 1
+const ENCODER_URL = '/models/comer/encoder_int8.onnx'
+const DECODER_URL = '/models/comer/decoder_int8.onnx'
+const VOCAB_URL = '/models/comer/vocab.json'
 
-// Some HuggingFace repos name the merged decoder differently; redirect to the split file.
-const _origFetch = env.fetch
-env.fetch = (input, init) => {
-  // Safely extract the URL string regardless of whether input is a URL, string, or Request.
-  const rawUrl =
-    input instanceof URL     ? input.href :
-    input instanceof Request ? input.url  :
-    String(input)
+const MAX_STEPS = 50
+const REPEAT_LIMIT = 3
 
-  if (rawUrl.endsWith('/decoder_model_merged_q4.onnx')) {
-    const fixed = rawUrl.replace(/decoder_model_merged_q4\.onnx$/, 'decoder_model_q4.onnx')
-    return _origFetch(fixed, init)
+interface Vocab {
+  word2idx: Record<string, number>
+  idx2word: Record<string, string>
+  special_tokens: { pad: number; sos: number; eos: number }
+  vocab_size: number
+}
+
+let encoderSession: ort.InferenceSession | null = null
+let decoderSession: ort.InferenceSession | null = null
+let vocab: Vocab | null = null
+let activeId = -1
+
+function postMsg(msg: WorkerResponse) { self.postMessage(msg) }
+
+async function init() {
+  console.log('[CalcInk worker] loading CoMER model (encoder + decoder)')
+  postMsg({ type: 'loading', message: 'Downloading model (~7.2 MB)…' })
+
+  const [encBuf, decBuf, vocabRes] = await Promise.all([
+    fetchWithCache(ENCODER_URL),
+    fetchWithCache(DECODER_URL),
+    fetch(VOCAB_URL),
+  ])
+  vocab = await vocabRes.json() as Vocab
+
+  postMsg({ type: 'loading', message: 'Initializing ONNX sessions…' })
+
+  const opts: ort.InferenceSession.SessionOptions = { executionProviders: ['wasm'] }
+  try {
+    ;[encoderSession, decoderSession] = await Promise.all([
+      ort.InferenceSession.create(encBuf, opts),
+      ort.InferenceSession.create(decBuf, opts),
+    ])
+  } catch (e) {
+    // fallback with default options
+    ;[encoderSession, decoderSession] = await Promise.all([
+      ort.InferenceSession.create(encBuf, {}),
+      ort.InferenceSession.create(decBuf, {}),
+    ])
   }
-  // Pass the original input unchanged so headers / method / body are preserved.
-  return _origFetch(input, init)
+
+  console.log('[CalcInk worker] CoMER ready')
 }
 
-function loadRecognizer() {
-  let lastProgress = -1
-  return pipeline('image-to-text', MODEL_ID, {
-    device: 'wasm',
-    dtype: 'q4',
-    revision: MODEL_REVISION,
-    progress_callback: progress => {
-      console.log('[CalcInk worker] progress:', progress.status, progress.file ?? '', progress.progress ?? '')
-      // transformers.js emits status:'progress' (not 'progress_total') for ongoing downloads
-      if (progress.status !== 'progress') return
-      const percent = Math.round(progress.progress ?? 0)
-      if (percent === lastProgress) return
-      lastProgress = percent
-      self.postMessage({
-        type: 'loading',
-        message: `Downloading model: ${percent}%`,
-      } satisfies WorkerResponse)
-    },
-  })
+function logSoftmax(logits: Float32Array, offset: number, size: number): Float64Array {
+  const result = new Float64Array(size)
+  let max = -Infinity
+  for (let i = 0; i < size; i++) { const v = logits[offset + i]!; if (v > max) max = v }
+  let sumExp = 0
+  for (let i = 0; i < size; i++) sumExp += Math.exp(logits[offset + i]! - max)
+  const logSumExp = Math.log(sumExp)
+  for (let i = 0; i < size; i++) result[i] = logits[offset + i]! - max - logSumExp
+  return result
 }
 
-type Recognizer = Awaited<ReturnType<typeof loadRecognizer>>
-
-let recognizer: Recognizer | null = null
-let activeRequestId = -1
-
-async function init(): Promise<void> {
-  console.log('[CalcInk worker] init — model:', MODEL_ID, 'revision:', MODEL_REVISION)
-  self.postMessage({
-    type: 'loading',
-    message: 'Loading handwriting model (first load downloads about 402 MiB)…',
-  } satisfies WorkerResponse)
-  recognizer = await loadRecognizer()
-  console.log('[CalcInk worker] model ready')
+async function runDecoder(
+  ids: number[],
+  encFeatures: ort.Tensor,
+  encMask: ort.Tensor,
+): Promise<Float32Array> {
+  const inputIds = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length])
+  const res = await decoderSession!.run({ encoder_features: encFeatures, encoder_mask: encMask, input_ids: inputIds })
+  inputIds.dispose()
+  return res['logits']!.data as Float32Array
 }
 
-async function recognize(imageData: ImageData, requestId: number): Promise<string> {
-  if (!recognizer) throw new Error('Handwriting model is not loaded')
+async function greedyDecode(
+  encFeatures: ort.Tensor,
+  encMask: ort.Tensor,
+  sos: number,
+  eos: number,
+  vocabSize: number,
+): Promise<number[]> {
+  const ids: number[] = [sos]
+  let repeatCount = 0
+  let lastToken = -1
 
-  console.log(`[CalcInk worker] recognize id=${requestId} image=${imageData.width}×${imageData.height}`)
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const logits = await runDecoder(ids, encFeatures, encMask)
+    const logProbs = logSoftmax(logits, (ids.length - 1) * vocabSize, vocabSize)
+
+    let maxVal = -Infinity, maxIdx = 0
+    for (let i = 0; i < vocabSize; i++) {
+      if (logProbs[i]! > maxVal) { maxVal = logProbs[i]!; maxIdx = i }
+    }
+
+    if (maxIdx === eos) break
+    if (maxIdx === lastToken) { if (++repeatCount >= REPEAT_LIMIT) break }
+    else repeatCount = 0
+    lastToken = maxIdx
+    ids.push(maxIdx)
+  }
+
+  return ids.slice(1)  // strip <sos>
+}
+
+function decodeTokens(ids: number[], v: Vocab): string[] {
+  const skip = new Set([v.special_tokens.pad, v.special_tokens.sos, v.special_tokens.eos])
+  return ids.filter(id => !skip.has(id)).map(id => v.idx2word[String(id)] ?? '')
+}
+
+async function recognize(strokes: import('./protocol').StrokeData[], requestId: number): Promise<string> {
+  if (!encoderSession || !decoderSession || !vocab) throw new Error('Model not loaded')
+
+  console.log(`[CalcInk worker] recognize id=${requestId} strokes=${strokes.length}`)
   const t0 = performance.now()
 
-  const image = new RawImage(imageData.data, imageData.width, imageData.height, 4)
-  const output = await recognizer(image, {
-    max_new_tokens: 128,
-    num_beams: 1,
-    do_sample: false,
-  })
+  const prep = preprocessStrokes(strokes)
+  const pixelValues = new ort.Tensor('float32', prep.tensor, [1, 1, prep.height, prep.width])
+  const pixelMask = new ort.Tensor('bool', prep.mask, [1, prep.maskHeight, prep.maskWidth])
 
-  if (activeRequestId !== requestId) throw new Error('cancelled')
-  const latex = output[0]?.generated_text.trim() ?? ''
-  console.log(`[CalcInk worker] result id=${requestId} (${(performance.now()-t0).toFixed(0)}ms): "${latex}"`)
+  const encResult = await encoderSession.run({ pixel_values: pixelValues, pixel_mask: pixelMask })
+  pixelValues.dispose()
+  pixelMask.dispose()
+
+  const encFeatures = encResult['encoder_features']!
+  const encMask = encResult['encoder_mask']!
+
+  if (activeId !== requestId) { encFeatures.dispose(); encMask.dispose(); throw new Error('cancelled') }
+
+  const { sos, eos } = vocab.special_tokens
+  const ids = await greedyDecode(encFeatures, encMask, sos, eos, vocab.vocab_size)
+  encFeatures.dispose()
+  encMask.dispose()
+
+  if (activeId !== requestId) throw new Error('cancelled')
+
+  const tokens = decodeTokens(ids, vocab)
+  const repaired = repairLatex(tokens)
+  const latex = repaired.join(' ')
+  console.log(`[CalcInk worker] result id=${requestId} (${(performance.now() - t0).toFixed(0)}ms): "${latex}"`)
   return latex
 }
 
@@ -88,26 +161,24 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   if (req.type === 'init') {
     try {
       await init()
-      self.postMessage({ type: 'ready' } satisfies WorkerResponse)
+      postMsg({ type: 'ready' })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error('[CalcInk worker] model init failed:', err)
-      self.postMessage({ type: 'init-error', message } satisfies WorkerResponse)
+      console.error('[CalcInk worker] init failed:', err)
+      postMsg({ type: 'init-error', message })
     }
     return
   }
 
   if (req.type === 'recognize') {
-    activeRequestId = req.id
+    activeId = req.id
     try {
-      const latex = await recognize(req.imageData, req.id)
-      if (activeRequestId === req.id) {
-        self.postMessage({ type: 'result', id: req.id, latex } satisfies WorkerResponse)
-      }
+      const latex = await recognize(req.strokes, req.id)
+      if (activeId === req.id) postMsg({ type: 'result', id: req.id, latex })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      if (message.includes('cancelled')) return
-      self.postMessage({ type: 'error', id: req.id, message } satisfies WorkerResponse)
+      if (message === 'cancelled') return
+      postMsg({ type: 'error', id: req.id, message })
     }
   }
 }

@@ -5,6 +5,8 @@ const TOKEN_MAP: Record<string, string> = {
   '+': '+',
   '-': '-',
   '−': '-',
+  '×': '*',  // Unicode multiplication sign (TrOCR output)
+  '÷': '/',  // Unicode division sign (TrOCR output)
   '\\times': '*',
   '\\cdot': '*',
   '\\div': '/',

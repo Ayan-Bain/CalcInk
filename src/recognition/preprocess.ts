@@ -1,169 +1,133 @@
-// Preprocessing pipeline matching RapidLatexOCR Python implementation.
-// mean=0.7931, std=0.1738 (single-channel grayscale)
+// CoMER preprocessing: stroke data → tensor + mask for the ONNX encoder.
+// Renders using CROHME convention (white ink on black bg) with Bézier curves.
+// Adapted from kimseungdae/ink-on (MIT)
 
-const MEAN = 0.7931 * 255  // 202.24
-const STD  = 0.1738 * 255  // 44.32
-
-const MAX_W = 672
-const MAX_H = 192
-const MIN_W = 32
-const MIN_H = 32
-const DIV   = 32   // pad to multiples of this
-
-// ---- public API ----
+export interface StrokeData {
+  points: { x: number; y: number }[]
+  lineWidth: number
+}
 
 export interface PreprocessResult {
-  tensor: Float32Array  // [1, 1, H, W]
-  height: number
-  width: number
+  tensor: Float32Array  // [1, 1, MODEL_H, width] grayscale 0–1
+  height: number        // MODEL_H = 256
+  width: number         // dynamic, aligned to W_ALIGN
+  mask: Uint8Array      // [MODEL_H × width] — 0=content, 1=padding
+  maskHeight: number
+  maskWidth: number
 }
 
-/**
- * Full preprocessing pipeline:
- *   ImageData (RGBA) → crop/pad → minmax size → grayscale → normalize → [1,1,H,W]
- */
-export function preprocessImage(imageData: ImageData): PreprocessResult {
-  const { gray, width: gw, height: gh } = rgbaToGray(imageData)
-  const { gray: cropped, width: cw, height: ch } = autoCropAndPad(gray, gw, gh)
-  const { gray: sized, width: sw, height: sh } = minmaxSize(cropped, cw, ch, MAX_W, MAX_H, MIN_W, MIN_H)
-  const { gray: padded, width: pw, height: ph } = padToDivisible(sized, sw, sh, DIV)
-  const tensor = normalizeToTensor(padded, pw, ph)
-  return { tensor, width: pw, height: ph }
-}
+const MODEL_H = 256
+const MAX_W = 1024
+const MIN_W = 128
+const W_ALIGN = 64
+const TARGET_H = 128  // scale content to CROHME training height
+const PAD = 16
 
-/**
- * Resize image to a new width, keeping height proportional (or specified).
- */
-export function resizeGray(
-  gray: Float32Array, srcW: number, srcH: number,
-  dstW: number, dstH: number
-): Float32Array {
-  const out = new Float32Array(dstW * dstH)
-  const xScale = srcW / dstW
-  const yScale = srcH / dstH
-  for (let y = 0; y < dstH; y++) {
-    for (let x = 0; x < dstW; x++) {
-      const sx = Math.min(Math.floor(x * xScale), srcW - 1)
-      const sy = Math.min(Math.floor(y * yScale), srcH - 1)
-      out[y * dstW + x] = gray[sy * srcW + sx]
+function resamplePoints(
+  points: { x: number; y: number }[],
+  interval = 3,
+): { x: number; y: number }[] {
+  if (points.length < 2) return points
+  const out: { x: number; y: number }[] = [points[0]!]
+  let remaining = interval
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1]!
+    const curr = points[i]!
+    const dx = curr.x - prev.x
+    const dy = curr.y - prev.y
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    if (dist <= remaining) { remaining -= dist; continue }
+    let covered = remaining
+    while (covered <= dist) {
+      const t = covered / dist
+      out.push({ x: prev.x + dx * t, y: prev.y + dy * t })
+      covered += interval
     }
+    remaining = covered - dist
   }
+  out.push(points[points.length - 1]!)
   return out
 }
 
-export function preprocessResized(
-  gray: Float32Array, w: number, h: number
-): PreprocessResult {
-  const { gray: sized, width: sw, height: sh } = minmaxSize(gray, w, h, MAX_W, MAX_H, MIN_W, MIN_H)
-  const { gray: padded, width: pw, height: ph } = padToDivisible(sized, sw, sh, DIV)
-  const tensor = normalizeToTensor(padded, pw, ph)
-  return { tensor, width: pw, height: ph }
+function computeBBox(strokes: StrokeData[]) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const s of strokes)
+    for (const p of s.points) {
+      if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y
+      if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y
+    }
+  return { minX, minY, maxX, maxY }
 }
 
-// ---- internals ----
+function renderStrokes(strokes: StrokeData[]): OffscreenCanvas {
+  const bbox = computeBBox(strokes)
+  const canvas = new OffscreenCanvas(
+    Math.max(1, Math.ceil(bbox.maxX - bbox.minX)) + PAD * 2,
+    Math.max(1, Math.ceil(bbox.maxY - bbox.minY)) + PAD * 2,
+  )
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.strokeStyle = '#fff'
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
 
-function rgbaToGray(img: ImageData): { gray: Float32Array; width: number; height: number } {
-  const { width: w, height: h, data } = img
-  const gray = new Float32Array(w * h)
-  for (let i = 0; i < w * h; i++) {
-    // luminance (white background, dark ink)
-    const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2]
-    gray[i] = 0.299 * r + 0.587 * g + 0.114 * b
-  }
-  return { gray, width: w, height: h }
-}
-
-function autoCropAndPad(
-  gray: Float32Array, w: number, h: number
-): { gray: Float32Array; width: number; height: number } {
-  // Find bounding box of dark pixels (ink)
-  const threshold = 200  // pixels darker than this are "ink"
-  let minX = w, minY = h, maxX = -1, maxY = -1
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (gray[y * w + x] < threshold) {
-        if (x < minX) minX = x
-        if (y < minY) minY = y
-        if (x > maxX) maxX = x
-        if (y > maxY) maxY = y
+  for (const stroke of strokes) {
+    if (stroke.points.length === 0) continue
+    const pts = resamplePoints(stroke.points)
+    ctx.lineWidth = Math.max(2, stroke.lineWidth)
+    ctx.beginPath()
+    const ox = -bbox.minX + PAD
+    const oy = -bbox.minY + PAD
+    ctx.moveTo(pts[0]!.x + ox, pts[0]!.y + oy)
+    if (pts.length === 2) {
+      ctx.lineTo(pts[1]!.x + ox, pts[1]!.y + oy)
+    } else {
+      for (let i = 1; i < pts.length - 1; i++) {
+        ctx.quadraticCurveTo(
+          pts[i]!.x + ox, pts[i]!.y + oy,
+          (pts[i]!.x + pts[i + 1]!.x) / 2 + ox,
+          (pts[i]!.y + pts[i + 1]!.y) / 2 + oy,
+        )
       }
+      ctx.lineTo(pts[pts.length - 1]!.x + ox, pts[pts.length - 1]!.y + oy)
     }
+    ctx.stroke()
   }
-
-  if (maxX < 0) {
-    // No ink found — return minimal image
-    const out = new Float32Array(DIV * DIV).fill(255)
-    return { gray: out, width: DIV, height: DIV }
-  }
-
-  // Crop to bounding box
-  const cw = maxX - minX + 1
-  const ch = maxY - minY + 1
-  const cropped = new Float32Array(cw * ch)
-  for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      cropped[y * cw + x] = gray[(minY + y) * w + (minX + x)]
-    }
-  }
-
-  // Pad to multiples of DIV
-  return padToDivisible(cropped, cw, ch, DIV)
+  return canvas
 }
 
-function padToDivisible(
-  gray: Float32Array, w: number, h: number, div: number
-): { gray: Float32Array; width: number; height: number } {
-  const pw = Math.ceil(w / div) * div
-  const ph = Math.ceil(h / div) * div
-  if (pw === w && ph === h) return { gray, width: w, height: h }
-  const out = new Float32Array(pw * ph).fill(255)
-  for (let y = 0; y < h; y++) {
-    out.set(gray.subarray(y * w, y * w + w), y * pw)
-  }
-  return { gray: out, width: pw, height: ph }
+function scaleToFit(src: OffscreenCanvas) {
+  const scale = Math.min(TARGET_H / src.height, MAX_W / src.width)
+  const dw = Math.max(1, Math.round(src.width * scale))
+  const dh = Math.max(1, Math.round(src.height * scale))
+  const canvasW = Math.min(MAX_W, Math.max(MIN_W, Math.ceil((dw + PAD) / W_ALIGN) * W_ALIGN))
+  const target = new OffscreenCanvas(canvasW, MODEL_H)
+  const ctx = target.getContext('2d')!
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, canvasW, MODEL_H)
+  // top-left aligned (CROHME convention)
+  ctx.drawImage(src, 0, 0, dw, dh)
+  return { canvas: target, contentH: dh, contentW: dw, canvasW }
 }
 
-function minmaxSize(
-  gray: Float32Array, w: number, h: number,
-  maxW: number, maxH: number, minW: number, minH: number
-): { gray: Float32Array; width: number; height: number } {
-  let nw = w, nh = h
+export function preprocessStrokes(strokes: StrokeData[]): PreprocessResult {
+  const rawCanvas = renderStrokes(strokes)
+  const { canvas, contentH, contentW, canvasW } = scaleToFit(rawCanvas)
 
-  // Scale down if exceeds max
-  const ratioW = nw / maxW, ratioH = nh / maxH
-  if (ratioW > 1 || ratioH > 1) {
-    const ratio = Math.max(ratioW, ratioH)
-    nw = Math.max(1, Math.floor(nw / ratio))
-    nh = Math.max(1, Math.floor(nh / ratio))
+  const ctx = canvas.getContext('2d')!
+  const { data } = ctx.getImageData(0, 0, canvasW, MODEL_H)
+  const pixels = canvasW * MODEL_H
+  const tensor = new Float32Array(pixels)
+  for (let i = 0; i < pixels; i++) {
+    const o = i * 4
+    tensor[i] = (data[o]! * 0.299 + data[o + 1]! * 0.587 + data[o + 2]! * 0.114) / 255
   }
 
-  // Pad up to min
-  nw = Math.max(nw, minW)
-  nh = Math.max(nh, minH)
+  const mask = new Uint8Array(MODEL_H * canvasW)
+  for (let y = 0; y < MODEL_H; y++)
+    for (let x = 0; x < canvasW; x++)
+      mask[y * canvasW + x] = y < contentH && x < contentW ? 0 : 1
 
-  if (nw === w && nh === h) return { gray, width: w, height: h }
-
-  // Resize if shrank
-  let resized = gray
-  if (nw !== w || nh !== h) {
-    resized = resizeGray(gray, w, h, Math.min(nw, w), Math.min(nh, h))
-  }
-
-  // Pad if grew
-  if (nw > resized.length / nh || nh > resized.length / nw) {
-    const padded = new Float32Array(nw * nh).fill(255)
-    const rw = Math.min(nw, w), rh = Math.min(nh, h)
-    for (let y = 0; y < rh; y++) padded.set(resized.subarray(y * rw, y * rw + rw), y * nw)
-    return { gray: padded, width: nw, height: nh }
-  }
-
-  return { gray: resized, width: nw, height: nh }
-}
-
-function normalizeToTensor(gray: Float32Array, w: number, h: number): Float32Array {
-  const tensor = new Float32Array(w * h)
-  for (let i = 0; i < tensor.length; i++) {
-    tensor[i] = (gray[i] - MEAN) / STD
-  }
-  return tensor  // caller wraps in [1,1,H,W]
+  return { tensor, height: MODEL_H, width: canvasW, mask, maskHeight: MODEL_H, maskWidth: canvasW }
 }
