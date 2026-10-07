@@ -8,8 +8,13 @@ import * as ort from 'onnxruntime-web'
 import type { WorkerRequest, WorkerResponse } from './protocol'
 import { preprocessResized, resizeGray } from './preprocess'
 
-// Point ORT to our locally-served WASM files
+// Point ORT to our locally-served WASM binaries.
+// numThreads=1: disables ORT's internal worker threads (the Web Worker itself
+// provides the off-main-thread isolation we need). This also prevents ORT from
+// dynamically importing the .jsep.mjs worker module (WebGPU init script), which
+// Vite dev-server refuses to serve as a module from /public.
 ort.env.wasm.wasmPaths = '/ort-wasm/'
+ort.env.wasm.numThreads = 1
 
 // Tokenizer vocab: id → string (loaded from tokenizer.json)
 let idToToken: string[] = []
