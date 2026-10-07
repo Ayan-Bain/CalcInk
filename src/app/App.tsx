@@ -49,7 +49,7 @@ export default function App() {
   useEffect(() => {
     if (!modelsReady) return
     if (strokes.length === 0) { setRecResult(null); return }
-    managerRef.current?.scheduleRecognition(strokes)
+    managerRef.current?.scheduleRecognition([...strokes])
   }, [strokes, modelsReady])
 
   useEffect(() => {

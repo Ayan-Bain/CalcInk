@@ -1,53 +1,60 @@
 import { describe, it, expect } from 'vitest'
-import { preprocessImage } from '../recognition/preprocess'
+import { preprocessStrokes, type StrokeData } from '../recognition/preprocess'
 
-function makeImageData(width: number, height: number, fill = 255): ImageData {
-  const data = new Uint8ClampedArray(width * height * 4)
-  for (let i = 0; i < data.length; i += 4) {
-    data[i] = fill; data[i + 1] = fill; data[i + 2] = fill; data[i + 3] = 255
+// OffscreenCanvas is not available in jsdom — provide a minimal stub
+if (typeof globalThis.OffscreenCanvas === 'undefined') {
+  class FakeContext {
+    fillStyle = ''; strokeStyle = ''; lineCap = ''; lineJoin = ''; lineWidth = 0
+    fillRect() {} beginPath() {} moveTo() {} lineTo() {} quadraticCurveTo() {} stroke() {}
+    drawImage() {}
+    getImageData(_x: number, _y: number, w: number, h: number) {
+      return { data: new Uint8ClampedArray(w * h * 4), width: w, height: h }
+    }
   }
-  return { data, width, height, colorSpace: 'srgb' }
+  class FakeOffscreenCanvas {
+    width: number; height: number
+    constructor(w: number, h: number) { this.width = w; this.height = h }
+    getContext() { return new FakeContext() }
+  }
+  ;(globalThis as any).OffscreenCanvas = FakeOffscreenCanvas
 }
 
-function makeImageDataWithInk(width: number, height: number): ImageData {
-  const img = makeImageData(width, height, 255)
-  // Draw a dark horizontal bar in the center
-  const cx = Math.floor(width / 2), cy = Math.floor(height / 2)
-  for (let x = cx - 20; x < cx + 20; x++) {
-    const off = (cy * width + x) * 4
-    img.data[off] = 0; img.data[off + 1] = 0; img.data[off + 2] = 0
-  }
-  return img
+function makeStrokes(n = 3): StrokeData[] {
+  return Array.from({ length: n }, (_, i) => ({
+    points: [{ x: 10 + i * 30, y: 20 }, { x: 30 + i * 30, y: 50 }, { x: 50 + i * 30, y: 20 }],
+    lineWidth: 4,
+  }))
 }
 
-describe('preprocessImage', () => {
-  it('returns a Float32Array of size width * height', () => {
-    const img = makeImageDataWithInk(200, 100)
-    const { tensor, width, height } = preprocessImage(img)
+describe('preprocessStrokes', () => {
+  it('returns tensor of size width * height', () => {
+    const { tensor, width, height } = preprocessStrokes(makeStrokes())
     expect(tensor.length).toBe(width * height)
   })
 
-  it('output dimensions are multiples of 32', () => {
-    const img = makeImageDataWithInk(200, 100)
-    const { width, height } = preprocessImage(img)
-    expect(width % 32).toBe(0)
-    expect(height % 32).toBe(0)
+  it('height is MODEL_H = 256', () => {
+    const { height } = preprocessStrokes(makeStrokes())
+    expect(height).toBe(256)
   })
 
-  it('output width does not exceed MAX_W=672', () => {
-    const img = makeImageDataWithInk(800, 100)
-    const { width } = preprocessImage(img)
-    expect(width).toBeLessThanOrEqual(672)
+  it('width is aligned to 64 px', () => {
+    const { width } = preprocessStrokes(makeStrokes())
+    expect(width % 64).toBe(0)
   })
 
-  it('output height does not exceed MAX_H=192', () => {
-    const img = makeImageDataWithInk(200, 300)
-    const { height } = preprocessImage(img)
-    expect(height).toBeLessThanOrEqual(192)
+  it('width is within [128, 1024]', () => {
+    const { width } = preprocessStrokes(makeStrokes())
+    expect(width).toBeGreaterThanOrEqual(128)
+    expect(width).toBeLessThanOrEqual(1024)
   })
 
-  it('handles blank (all-white) image without throwing', () => {
-    const img = makeImageData(200, 100, 255)
-    expect(() => preprocessImage(img)).not.toThrow()
+  it('mask has same number of elements as tensor', () => {
+    const { tensor, mask } = preprocessStrokes(makeStrokes())
+    expect(mask.length).toBe(tensor.length)
+  })
+
+  it('handles a single-point stroke without throwing', () => {
+    const strokes: StrokeData[] = [{ points: [{ x: 50, y: 50 }], lineWidth: 4 }]
+    expect(() => preprocessStrokes(strokes)).not.toThrow()
   })
 })
