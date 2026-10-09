@@ -64,4 +64,12 @@ describe('StrokeStore', () => {
     const didRedo = store.redo()
     expect(didRedo).toBe(false)
   })
+
+  it('seeds initial strokes from the constructor', () => {
+    const seeded = new StrokeStore([makeStroke('a'), makeStroke('b')])
+    expect(seeded.getStrokes().map(s => s.id)).toEqual(['a', 'b'])
+    // seeded strokes are copied, not held by reference
+    seeded.addStroke(makeStroke('c'))
+    expect(seeded.getStrokes()).toHaveLength(3)
+  })
 })

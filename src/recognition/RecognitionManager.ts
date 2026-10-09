@@ -2,16 +2,25 @@ import type { WorkerResponse, StrokeData } from './protocol'
 import type { Stroke } from '../ink/types'
 import { normalizeLatex } from './latexNormalizer'
 import { evaluate, type EvalResult } from '../math/evaluator'
+import { groupStrokesByLine, boundsOf, groupKey, type BBox } from './segment'
 
 export type RecognitionResult =
   | { status: 'recognized'; normalized: string; eval: EvalResult }
   | { status: 'rejected'; reason: string }
   | { status: 'empty' }
 
+/** One recognized expression plus where its ink sits and which strokes formed it. */
+export interface ExpressionResult {
+  box: BBox
+  result: RecognitionResult
+  /** Sorted ids of the strokes in this expression — its stable identity. */
+  strokeIds: string[]
+}
+
 export type LoadingCallback = (message: string) => void
 export type ReadyCallback = () => void
 
-type ResultCallback = (result: RecognitionResult) => void
+type ResultCallback = (results: ExpressionResult[]) => void
 
 export class RecognitionManager {
   private worker: Worker
@@ -22,6 +31,11 @@ export class RecognitionManager {
   private onReady?: ReadyCallback
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private debounceMs: number
+  // Cache of raw recognized LaTeX keyed by a group's stroke-id identity, so an
+  // unchanged expression is never re-run through the (expensive) model.
+  private latexCache = new Map<string, string>()
+  private pendingInfos: { key: string; box: BBox; strokeIds: string[] }[] = []
+  private static readonly CACHE_LIMIT = 256
 
   constructor(
     callback: ResultCallback,
@@ -54,11 +68,55 @@ export class RecognitionManager {
   private sendRecognition(strokes: Stroke[]): void {
     const id = this.nextId++
     this.pendingId = id
-    const strokeData: StrokeData[] = strokes.map(s => ({
-      points: s.points.map(p => ({ x: p.x, y: p.y })),
-      lineWidth: s.width,
+
+    const groups = groupStrokesByLine(strokes)
+    this.pendingInfos = groups.map(g => {
+      const strokeIds = g.map(s => s.id).sort()
+      return { key: groupKey(strokeIds), box: boundsOf(g)!, strokeIds }
+    })
+
+    if (groups.length === 0) { this.callback([]); return }
+
+    // Only run the model on expressions we haven't recognized before.
+    const needInfer = groups.filter((_, i) => !this.latexCache.has(this.pendingInfos[i].key))
+    const keys = this.pendingInfos.filter(info => !this.latexCache.has(info.key)).map(info => info.key)
+
+    if (needInfer.length === 0) { this.emit(id); return }
+
+    const groupData: StrokeData[][] = needInfer.map(group =>
+      group.map(s => ({
+        points: s.points.map(p => ({ x: p.x, y: p.y })),
+        lineWidth: s.width,
+      })),
+    )
+    this.worker.postMessage({ type: 'recognize', id, groups: groupData, keys })
+  }
+
+  /** Build and emit results for the current groups entirely from the latex cache. */
+  private emit(id: number): void {
+    if (id !== this.pendingId) return
+    const results: ExpressionResult[] = this.pendingInfos.map(info => ({
+      box: info.box,
+      strokeIds: info.strokeIds,
+      result: this.toResult(this.latexCache.get(info.key) ?? ''),
     }))
-    this.worker.postMessage({ type: 'recognize', id, strokes: strokeData })
+    this.callback(results)
+  }
+
+  private toResult(latex: string): RecognitionResult {
+    if (!latex) return { status: 'empty' }
+    const normalized = normalizeLatex(latex)
+    if (!normalized) return { status: 'rejected', reason: 'unsupported LaTeX' }
+    return { status: 'recognized', normalized, eval: evaluate(normalized) }
+  }
+
+  private cacheLatex(key: string, latex: string): void {
+    // Simple bounded LRU: refresh insertion order, evict oldest over the limit.
+    this.latexCache.delete(key)
+    this.latexCache.set(key, latex)
+    while (this.latexCache.size > RecognitionManager.CACHE_LIMIT) {
+      this.latexCache.delete(this.latexCache.keys().next().value!)
+    }
   }
 
   private handleMessage(e: MessageEvent<WorkerResponse>): void {
@@ -68,28 +126,20 @@ export class RecognitionManager {
     if (msg.type === 'init-error') { this.onLoading?.(`Model load failed: ${msg.message}`); return }
 
     if (msg.type === 'result') {
-      if (msg.id !== this.pendingId) return
-
-      if (!msg.latex) {
-        console.log('[CalcInk] recognition: empty output')
-        this.callback({ status: 'empty' })
-        return
-      }
-      const normalized = normalizeLatex(msg.latex)
-      console.log(`[CalcInk] raw latex: "${msg.latex}"  →  normalized: ${normalized === null ? 'null (rejected)' : `"${normalized}"`}`)
-      if (!normalized) {
-        this.callback({ status: 'rejected', reason: 'unsupported LaTeX' })
-        return
-      }
-      const evalResult = evaluate(normalized)
-      console.log(`[CalcInk] eval: "${normalized}" =`, evalResult.ok ? evalResult.value : `ERROR(${evalResult.error})`)
-      this.callback({ status: 'recognized', normalized, eval: evalResult })
+      // Cache every returned latex (keyed by stroke identity, so always valid)
+      // even if this response is stale — it may serve a later request.
+      msg.keys.forEach((key, i) => {
+        const latex = msg.latexes[i] ?? ''
+        this.cacheLatex(key, latex)
+        console.log(`[CalcInk] recognized "${latex}" for ${key.slice(0, 24)}…`)
+      })
+      this.emit(msg.id)
     }
 
     if (msg.type === 'error') {
       if (msg.id !== this.pendingId) return
       console.warn('[CalcInk] worker error:', msg.message)
-      this.callback({ status: 'rejected', reason: msg.message })
+      this.callback([])
     }
   }
 

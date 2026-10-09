@@ -26,6 +26,11 @@ describe('latexNormalizer', () => {
     expect(normalizeLatex('1 + 2 =')).toBe('1+2')
   })
 
+  it('strips a doubled trailing == (CoMER quirk)', () => {
+    expect(normalizeLatex('1+3==')).toBe('1+3')
+    expect(normalizeLatex('1 + 3 = =')).toBe('1+3')
+  })
+
   it('rejects mid-expression =', () => {
     expect(normalizeLatex('1=2+3')).toBeNull()
   })

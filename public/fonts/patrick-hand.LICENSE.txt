@@ -1,0 +1,8 @@
+Patrick Hand
+Copyright (c) 2010, Patrick Wagesreiter, with Reserved Font Name "Patrick Hand".
+
+This font is licensed under the SIL Open Font License, Version 1.1.
+This license is available with a FAQ at: https://openfontlicense.org
+
+The font was obtained from Google Fonts (https://fonts.google.com/specimen/Patrick+Hand)
+and is redistributed here, unmodified, under the terms of the OFL.

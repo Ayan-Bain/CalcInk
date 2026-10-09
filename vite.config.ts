@@ -73,7 +73,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       workbox: {
         // Cache static assets + ort-wasm
-        globPatterns: ['**/*.{js,css,html,ico,svg,wasm,mjs}'],
+        globPatterns: ['**/*.{js,css,html,ico,svg,wasm,mjs,woff2}'],
         // CoMER model files — use CacheFirst (models don't change)
         runtimeCaching: [
           {

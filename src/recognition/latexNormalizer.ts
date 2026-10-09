@@ -33,7 +33,7 @@ export function normalizeLatex(latex: string): string | null {
   const out: string[] = []
   for (const tok of chars) {
     if (tok === '=') {
-      // Strip a single trailing '='; if more follow, reject (mid-expression '=' is invalid)
+      // A leading '=' is invalid; otherwise keep it for the trailing-strip below.
       if (out.length === 0) return null
       out.push('=')
       continue
@@ -47,9 +47,9 @@ export function normalizeLatex(latex: string): string | null {
     return null
   }
 
-  // Remove trailing '=' (the user's "evaluate this" cue) — reject if '=' appears elsewhere
-  let result = out.join('')
-  if (result.endsWith('=')) result = result.slice(0, -1)
+  // Strip ALL trailing '=' (the user's "evaluate" cue; CoMER often emits a doubled "==").
+  // Reject only if an '=' remains in the middle of the expression.
+  let result = out.join('').replace(/=+$/, '')
   if (result.includes('=')) return null
   return result || null
 }

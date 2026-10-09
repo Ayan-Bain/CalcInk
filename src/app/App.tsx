@@ -1,30 +1,93 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { InkCanvas } from '../canvas/InkCanvas'
 import { useCanvasController, type Tool } from '../canvas/useCanvasController'
-import { ResultDisplay } from '../projection/ResultDisplay'
-import type { RecognitionResult } from '../recognition/RecognitionManager'
-import type { EvalResult } from '../math/evaluator'
+import { placeAnswers } from '../canvas/answerOverlay'
+import { exportCanvasPng, LIGHT_THEME, DARK_THEME, type CanvasBackground } from '../canvas/renderer'
+import { boundsOf } from '../recognition/segment'
+import type { ExpressionResult } from '../recognition/RecognitionManager'
 import './App.css'
-
-const BenchmarkPage = lazy(() => import('../benchmark/BenchmarkPage'))
-
-const CANVAS_WIDTH = Math.min(window.innerWidth - 32, 900)
-const CANVAS_HEIGHT = Math.max(300, Math.round(CANVAS_WIDTH * 0.45))
 
 const STROKE_WIDTHS = [2, 4, 6, 10]
 
-type Tab = 'draw' | 'benchmark'
+const BACKGROUNDS: { key: CanvasBackground; label: string; icon: string }[] = [
+  { key: 'ruled', label: 'Ruled', icon: '▤' },
+  { key: 'graph', label: 'Graph', icon: '▦' },
+  { key: 'blank', label: 'Blank', icon: '▢' },
+]
+
+const BG_KEY = 'calcink.background.v1'
+const DARK_KEY = 'calcink.dark.v1'
+
+function loadBackground(): CanvasBackground {
+  try {
+    const v = localStorage.getItem(BG_KEY)
+    if (v === 'ruled' || v === 'graph' || v === 'blank') return v
+  } catch { /* ignore */ }
+  return 'ruled'
+}
+
+function loadDark(): boolean {
+  try {
+    const v = localStorage.getItem(DARK_KEY)
+    if (v === '1') return true
+    if (v === '0') return false
+  } catch { /* ignore */ }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+}
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('draw')
   const [tool, setTool] = useState<Tool>('pen')
   const [strokeWidth, setStrokeWidth] = useState(4)
   const [color] = useState('#1a1a2e')
+  const [background, setBackground] = useState<CanvasBackground>(loadBackground)
+  const [dark, setDark] = useState<boolean>(loadDark)
+  const theme = dark ? DARK_THEME : LIGHT_THEME
+
+  // Canvas width tracks the viewport; height is a growable scroll area.
+  const [size, setSize] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }))
+  const [canvasHeight, setCanvasHeight] = useState(() => window.innerHeight)
+  useEffect(() => {
+    const onResize = () => {
+      setSize({ w: window.innerWidth, h: window.innerHeight })
+      setCanvasHeight(h => Math.max(h, window.innerHeight))
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  useEffect(() => {
+    try { localStorage.setItem(BG_KEY, background) } catch { /* ignore */ }
+  }, [background])
+
+  useEffect(() => {
+    try { localStorage.setItem(DARK_KEY, dark ? '1' : '0') } catch { /* ignore */ }
+  }, [dark])
 
   const { strokes, onPointerDown, onPointerMove, onPointerUp, undo, redo, clear } =
     useCanvasController(strokeWidth, color, tool)
 
-  const [recResult, setRecResult] = useState<RecognitionResult | null>(null)
+  // Keep the canvas tall enough to hold all ink (covers restored strokes and
+  // writing near the bottom), never shrinking below what's already shown.
+  useEffect(() => {
+    const b = boundsOf(strokes)
+    if (b) setCanvasHeight(h => Math.max(h, b.maxY + 200))
+  }, [strokes])
+
+  // Grow the scroll area whenever the user reaches (or wheels past) the bottom.
+  function growIfAtBottom(el: HTMLDivElement) {
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) {
+      setCanvasHeight(h => h + Math.round(window.innerHeight * 0.8))
+    }
+  }
+  function onScroll(e: React.UIEvent<HTMLDivElement>) {
+    growIfAtBottom(e.currentTarget)
+  }
+  // Wheel bootstraps growth when the canvas isn't yet tall enough to scroll.
+  function onWheel(e: React.WheelEvent<HTMLDivElement>) {
+    if (e.deltaY > 0) growIfAtBottom(e.currentTarget)
+  }
+
+  const [results, setResults] = useState<ExpressionResult[]>([])
   const [modelStatus, setModelStatus] = useState<string>('Loading models…')
   const [modelsReady, setModelsReady] = useState(false)
   const managerRef = useRef<import('../recognition/RecognitionManager').RecognitionManager | null>(null)
@@ -34,7 +97,7 @@ export default function App() {
     import('../recognition/RecognitionManager').then(({ RecognitionManager }) => {
       if (!mounted) return
       managerRef.current = new RecognitionManager(
-        result => { if (mounted) setRecResult(result) },
+        res => { if (mounted) setResults(res) },
         600,
         msg => { if (mounted) setModelStatus(msg) },
         () => { if (mounted) { setModelsReady(true); setModelStatus('Ready') } },
@@ -46,7 +109,7 @@ export default function App() {
   // Reactive recognition — re-runs on every stroke edit
   useEffect(() => {
     if (!modelsReady) return
-    if (strokes.length === 0) { setRecResult(null); return }
+    if (strokes.length === 0) { setResults([]); return }
     managerRef.current?.scheduleRecognition([...strokes])
   }, [strokes, modelsReady])
 
@@ -59,26 +122,34 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [undo, redo])
 
-  const evalResult: EvalResult | null = recResult?.status === 'recognized' ? recResult.eval : null
-  const normalized = recResult?.status === 'recognized' ? recResult.normalized : null
-  const displayStatus = recResult === null ? 'idle' : recResult.status
+  // Keep each expression's answer on screen unless its own strokes changed.
+  const answers = placeAnswers(strokes, results, dark)
+
+  function handleExport() {
+    exportCanvasPng([...strokes], answers, size.w, canvasHeight, window.devicePixelRatio || 1, background, theme)
+  }
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1 className="app-title">CalcInk</h1>
-        <p className="app-subtitle">Handwritten arithmetic calculator — 100% client-side</p>
-      </header>
+    <div className={`draw-view ${dark ? 'dark' : ''}`} onScroll={onScroll} onWheel={onWheel}>
+      <InkCanvas
+        strokes={strokes}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        width={size.w}
+        height={canvasHeight}
+        answers={answers}
+        background={background}
+        theme={theme}
+      />
 
-      <div className="tab-bar">
-        <button onClick={() => setTab('draw')} className={`tab-btn ${tab === 'draw' ? 'active' : ''}`}>Draw</button>
-        <button onClick={() => setTab('benchmark')} className={`tab-btn ${tab === 'benchmark' ? 'active' : ''}`}>Benchmark</button>
-        <span className={`model-status ${modelsReady ? 'ready' : 'loading'}`}>{modelStatus}</span>
-      </div>
+      <div className="overlay-top">
+        <div className="tab-bar floating">
+          <span className="brand">CalcInk</span>
+          <span className={`model-status ${modelsReady ? 'ready' : 'loading'}`}>{modelStatus}</span>
+        </div>
 
-      {tab === 'draw' && (
-        <>
-          <div className="toolbar">
+        <div className="toolbar floating">
             <button onClick={() => setTool('pen')} className={`tool-btn ${tool === 'pen' ? 'active' : ''}`} title="Pen">✏️</button>
             <button onClick={() => setTool('stroke-eraser')} className={`tool-btn ${tool === 'stroke-eraser' ? 'active' : ''}`} title="Stroke Eraser">🖊</button>
             <div className="divider" />
@@ -91,32 +162,25 @@ export default function App() {
             <button onClick={undo} className="tool-btn" title="Undo (Ctrl+Z)">↩</button>
             <button onClick={redo} className="tool-btn" title="Redo (Ctrl+Y)">↪</button>
             <button onClick={clear} className="tool-btn" title="Clear">🗑</button>
+            <div className="divider" />
+            <button onClick={handleExport} className="tool-btn" title="Export as PNG" disabled={strokes.length === 0}>⬇</button>
+            <div className="divider" />
+            {BACKGROUNDS.map(b => (
+              <button
+                key={b.key}
+                onClick={() => setBackground(b.key)}
+                className={`tool-btn ${background === b.key ? 'active' : ''}`}
+                title={`${b.label} background`}
+              >{b.icon}</button>
+            ))}
+            <div className="divider" />
+            <button
+              onClick={() => setDark(d => !d)}
+              className="tool-btn"
+              title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            >{dark ? '☀️' : '🌙'}</button>
           </div>
-
-          <div className="canvas-wrapper">
-            <InkCanvas
-              strokes={strokes}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              width={CANVAS_WIDTH}
-              height={CANVAS_HEIGHT}
-            />
-          </div>
-
-          <ResultDisplay evalResult={evalResult} normalized={normalized} status={displayStatus} />
-        </>
-      )}
-
-      {tab === 'benchmark' && (
-        <Suspense fallback={<div style={{ padding: 24, color: '#888' }}>Loading benchmark…</div>}>
-          <BenchmarkPage />
-        </Suspense>
-      )}
-
-      <footer className="app-footer">
-        <small>Recognition: CoMER handwritten-math ONNX · Inference runs locally · No data leaves your device</small>
-      </footer>
-    </div>
+        </div>
+      </div>
   )
 }

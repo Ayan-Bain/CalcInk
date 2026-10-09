@@ -5,9 +5,13 @@ export interface StrokeStoreSnapshot {
 }
 
 export class StrokeStore {
-  private strokes: Stroke[] = []
+  private strokes: Stroke[]
   private undoStack: Stroke[][] = []
   private redoStack: Stroke[][] = []
+
+  constructor(initialStrokes: Stroke[] = []) {
+    this.strokes = [...initialStrokes]
+  }
 
   getStrokes(): readonly Stroke[] { return this.strokes }
 

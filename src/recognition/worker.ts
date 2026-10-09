@@ -173,8 +173,17 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   if (req.type === 'recognize') {
     activeId = req.id
     try {
-      const latex = await recognize(req.strokes, req.id)
-      if (activeId === req.id) postMsg({ type: 'result', id: req.id, latex })
+      const latexes: string[] = []
+      for (const group of req.groups) {
+        try {
+          latexes.push(await recognize(group, req.id))
+        } catch (err) {
+          // A newer edit cancels the whole batch; other errors just blank that line.
+          if (err instanceof Error && err.message === 'cancelled') return
+          latexes.push('')
+        }
+      }
+      if (activeId === req.id) postMsg({ type: 'result', id: req.id, latexes, keys: req.keys ?? [] })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       if (message === 'cancelled') return
